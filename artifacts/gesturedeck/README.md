@@ -37,6 +37,12 @@ pnpm build
 
 Use Gesture Map to assign any listed gesture to another command. Hold Frames, Cooldown, and Confidence Threshold adjust the recognition reliability gate. Training captures forty normalized examples of a named custom pose, persists them in local storage, and supports JSON export/import and deletion.
 
+## Open your own presentation
+
+In **Demo App → Slides**, choose **Add files** or drag a file onto the slide stage. GestureDeck accepts one PDF, one PowerPoint `.pptx`, or up to forty images in one selection. Previous/Next gestures and keyboard controls navigate the imported pages just like the built-in demo. The app opens the file locally in the browser; file bytes are not uploaded and the import is cleared when the page is refreshed. Each selected file must be under 100 MB and the total image batch under 150 MB.
+
+Imported PowerPoint slides are rendered as static pages: animations and transitions do not play, and some advanced chart or SmartArt elements may be simplified. The viewer may request substitute fonts from Google Fonts; this sends font names only, not presentation contents.
+
 Keyboard fallback: **Space** pause, **Enter** play, **Left/Right** previous/next, **Up/Down** volume, **M** mute, **Escape** stop, **P** start, **S** seek, **R** rotate the virtual fan, and **F** exit fullscreen. The Presentation Viewer uses next/previous for slide navigation and Play/Start to enter fullscreen. Shortcuts are suppressed while a text field, button, or dialog is focused.
 
 ## Architecture
@@ -70,7 +76,7 @@ The device-side relay protocol is intentionally small: connect using the copied 
 
 ## Limitations
 
-This is a hackathon prototype, not a safety-critical controller. Hand pose estimation depends on lighting, camera quality, framing, and the hand being visible. Static classification uses hand geometry heuristics; custom KNN requires consistent examples. Fast movement and unusual orientations can be ambiguous. Browser camera APIs need a secure context. No relay server or physical device integration is included, and a configured endpoint is not considered connected until its WebSocket is open. CDN access is needed to load the MediaPipe package and model. Generated audio is a small oscillator demonstration, not bundled music.
+This is a prototype, not a safety-critical controller. Hand pose estimation depends on lighting, camera quality, framing, and the hand being visible. Static classification uses hand geometry heuristics; custom KNN requires consistent examples. Fast movement and unusual orientations can be ambiguous. Browser camera APIs need a secure context. The built-in relay is generic and in-memory; no device-specific firmware is included. CDN access is needed to load the MediaPipe model and PowerPoint font substitutions. Generated audio is a small oscillator demonstration, not bundled music.
 
 ## Future work
 

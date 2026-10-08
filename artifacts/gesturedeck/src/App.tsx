@@ -4,6 +4,8 @@ import { commandBus, type Command, type CommandEvent } from './commands/commandB
 import { createTone, tracks } from './apps/MediaPlayer';
 import { slides } from './apps/Slides';
 import { applyVirtualDeviceCommand, initialVirtualDevices } from './apps/VirtualDevices';
+import { disposeImportedPresentation, type ImportedPresentation } from './apps/importedPresentation';
+import { PresentationViewer } from './components/PresentationViewer';
 import { CONNECTIONS, classifyStatic, normalizedFeatures, smoothHand, type Hand as LandmarkHand } from './vision/features';
 import { DynamicClassifier } from './vision/dynamicClassifier';
 import { createDetector, type Detector } from './vision/handLandmarker';
@@ -48,6 +50,8 @@ function App(){
   const [gesture,setGesture]=useState('No hand detected'),[confidence,setConfidence]=useState(0),[holdProgress,setHoldProgress]=useState(0),[pipeline,setPipeline]=useState(0);
   const [error,setError]=useState(''),[showSettings,setShowSettings]=useState(false),[showOnboard,setShowOnboard]=useState(()=>!localStorage.getItem('gesturedeck:onboarded'));
   const [track,setTrack]=useState(0),[playing,setPlaying]=useState(false),[volume,setVolume]=useState(55),[muted,setMuted]=useState(false),[slide,setSlide]=useState(0),[practice,setPractice]=useState(false),[practiceIndex,setPracticeIndex]=useState(0);
+  const [importedPresentation,setImportedPresentation]=useState<ImportedPresentation|null>(null);
+  const presentationSlideCount=importedPresentation?.pageCount??slides.length;
   const [trainName,setTrainName]=useState('My gesture'),[recording,setRecording]=useState(false),[captureCount,setCaptureCount]=useState(0),[countdown,setCountdown]=useState(0);
   const [relayChannel]=useState(createRelayChannel);
   const [wsUrl,setWsUrl]=useStored('wsUrl',initialRelayEndpoint(relayChannel)),[wsStatus,setWsStatus]=useState('Disconnected'),[wsDeviceCount,setWsDeviceCount]=useState(0),[virtualDevices,setVirtualDevices]=useStored('devices',initialVirtualDevices);
@@ -67,21 +71,22 @@ function App(){
     if(command==='Play'||command==='Start'){if(app==='Presentation Viewer'){fullscreen();}else playTone(track);}
     if(command==='Pause'){stopTone();}
     if(command==='Stop'){stopTone();if(app==='Presentation Viewer'&&document.fullscreenElement)void document.exitFullscreen();}
-    if(command==='Next'){if(app==='Presentation Viewer')setSlide(i=>Math.min(slides.length-1,i+1));else nextTrack(1);}
+    if(command==='Next'){if(app==='Presentation Viewer')setSlide(i=>Math.min(presentationSlideCount-1,i+1));else nextTrack(1);}
     if(command==='Previous'){if(app==='Presentation Viewer')setSlide(i=>Math.max(0,i-1));else nextTrack(-1);}
     if(command==='Volume up')setVolume(v=>Math.min(100,v+8));
     if(command==='Volume down')setVolume(v=>Math.max(0,v-8));
     if(command==='Mute')setMuted(v=>!v);
     if(command==='Exit fullscreen'&&document.fullscreenElement)void document.exitFullscreen();
-    if(command==='Seek'){if(app==='Presentation Viewer')setSlide(i=>Math.min(slides.length-1,i+1));else if(oscRef.current)playTone(track);}
+    if(command==='Seek'){if(app==='Presentation Viewer')setSlide(i=>Math.min(presentationSlideCount-1,i+1));else if(oscRef.current)playTone(track);}
     setVirtualDevices(devices=>applyVirtualDeviceCommand(devices,command));
     const event={command,gesture:sourceGesture,confidence:conf,at:Date.now()};
     setEvents(prev=>[event,...prev].slice(0,100));setPipeline(5);
     const labels:Record<Command,string>={Play:app==='Media Player'?'Playing '+tracks[track]:'Presentation started',Start:'Started · studio light on',Pause:app==='Media Player'?'Playback paused':'Paused',Previous:app==='Media Player'?'Previous track':'Previous slide',Next:app==='Media Player'?'Next track':'Next slide',Stop:'Stopped · virtual devices off', 'Volume up':'Volume increased','Volume down':'Volume decreased',Mute:muted?'Audio unmuted':'Audio muted',Seek:'Seek forward',Rotate:'Virtual fan toggled','Exit fullscreen':'Presentation closed'};
     notify(labels[command]||command);
     const socket=socketRef.current;if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'command',command,gesture:sourceGesture,confidence:conf,at:event.at}));
-  },[app,fullscreen,muted,nextTrack,notify,playTone,slide,stopTone,track]);
+  },[app,fullscreen,muted,nextTrack,notify,playTone,presentationSlideCount,slide,stopTone,track]);
   useEffect(()=>{const unsubscribe=commandBus.subscribe(e=>doCommand(e.command,e.gesture,e.confidence));return()=>{unsubscribe();};},[doCommand]);
+  useEffect(()=>()=>disposeImportedPresentation(importedPresentation),[importedPresentation]);
   const startCamera=useCallback(async()=>{
     setError('');setCameraState('Requesting access');
     if(!navigator.mediaDevices?.getUserMedia){setCameraState('Unavailable');setError('Camera access requires a secure HTTPS context and a camera-capable browser.');return;}
@@ -178,7 +183,7 @@ function App(){
                 <div className="flex items-center justify-center gap-3"><button className="btn !rounded-full !p-3" aria-label="Previous track" onClick={()=>nextTrack(-1)}><ChevronLeft size={17}/></button>{playing?<button className="btn btn-primary !rounded-full !p-3" aria-label="Pause" onClick={stopTone}><Pause size={18}/></button>:<button className="btn btn-primary !rounded-full !p-3" aria-label="Play" onClick={()=>playTone(track)}><Play size={18}/></button>}<button className="btn !rounded-full !p-3" aria-label="Stop" onClick={stopTone}><Square size={14}/></button><button className="btn !rounded-full !p-3" aria-label="Next track" onClick={()=>nextTrack(1)}><ChevronRight size={17}/></button></div>
                 <div className="mt-5 flex items-center gap-3"><Volume2 size={15} className="text-slate-400"/><input aria-label="Volume" type="range" min="0" max="100" value={volume} onChange={e=>setVolume(Number(e.target.value))} className="range"/><span className="mono w-9 text-right text-[10px] text-slate-400">{muted?'MUTE':volume+'%'}</span><button className="btn !px-2 !py-1.5" onClick={()=>setMuted(v=>!v)}>{muted?'Unmute':'Mute'}</button></div>
                 <div className="mt-4 border-t border-white/5 pt-3"><div className="eyebrow mb-2">UP NEXT</div>{tracks.map((name,i)=><button key={name} onClick={()=>{setTrack(i);if(playing)playTone(i);}} className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs ${i===track?'bg-cyan-200/[.08] text-cyan-100':'text-slate-400 hover:bg-white/[.03]'}`}><span>{String(i+1).padStart(2,'0')}　{name}</span>{i===track&&<span className="text-[9px] uppercase tracking-widest">Selected</span>}</button>)}</div>
-              </div>:<div id="slide-stage" className="relative flex min-h-[360px] flex-col justify-between overflow-hidden rounded-xl border border-cyan-100/10 bg-[#0a1b2c] p-6 sm:p-8"><div className="absolute -right-12 -top-20 h-72 w-72 rounded-full border border-cyan-200/10"/><div className="absolute -right-3 -top-11 h-52 w-52 rounded-full border border-cyan-200/10"/><div className="relative"><div className="eyebrow text-cyan-200">{slides[slide].eyebrow}</div><h3 className="mt-5 whitespace-pre-line text-3xl font-extrabold leading-[1.08] tracking-[-.055em] sm:text-4xl">{slides[slide].title}</h3><p className="mt-5 max-w-sm text-sm leading-6 text-slate-400">{slides[slide].body}</p></div><div className="relative mt-7 flex items-center justify-between"><div className="mono text-[10px] text-slate-500">GESTUREDECK / {String(slide+1).padStart(2,'0')}—06</div><div className="flex gap-2"><button className="btn" aria-label="Previous slide" onClick={()=>setSlide(i=>Math.max(0,i-1))}><ChevronLeft size={15}/></button><button className="btn" aria-label="Next slide" onClick={()=>setSlide(i=>Math.min(5,i+1))}><ChevronRight size={15}/></button><button className="btn btn-primary" onClick={fullscreen}>{isPresenting?'Exit':'Present'}</button></div></div><div className="absolute bottom-0 left-0 h-[2px] bg-cyan-300 transition-all" style={{width:`${(slide+1)/6*100}%`}}/></div>}
+               </div>:<PresentationViewer slide={slide} onSlideChange={setSlide} imported={importedPresentation} onImportedChange={setImportedPresentation} isPresenting={isPresenting} onPresent={fullscreen}/>}
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[.025] px-3 py-3"><div className="flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg bg-cyan-100/10 text-cyan-200"><Hand size={16}/></div><div><div className="text-xs font-bold">Practice Mode</div><div className="text-[10px] text-slate-500">Try each control gesture in sequence</div></div></div>{practice?<div className="flex items-center gap-2"><span className="chip">{practiceIndex+1}/{practiceGestures.length} · {practiceGestures[practiceIndex]}</span><button className="btn !py-1.5" onClick={()=>setPractice(false)}>End</button></div>:<button className="btn !py-1.5" onClick={startPractice}>Begin practice</button>}</div>
             </div>}
             {tab==='Gesture Map'&&<div><div className="mb-4"><div className="eyebrow">PERSONALIZE INPUT</div><h2 className="mt-1 text-lg font-extrabold">Gesture map</h2><p className="mt-1 text-xs text-slate-400">Choose what each pose or motion does. Changes save in this browser.</p></div><div className="max-h-[445px] overflow-auto rounded-xl border border-white/7"><table className="w-full text-left text-xs"><thead className="sticky top-0 bg-[#102236] text-[10px] uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Gesture</th><th className="px-3 py-3">Command</th><th className="px-3 py-3">Type</th></tr></thead><tbody>{gestureNames.map(name=><tr key={name} className="border-t border-white/5"><td className="px-3 py-2.5 font-bold text-slate-200">{name}</td><td className="px-3 py-2"><select aria-label={`Command for ${name}`} className="control !w-auto min-w-32 !py-2" value={mapping[name]||'Pause'} onChange={e=>setMapping(m=>({...m,[name]:e.target.value as Command}))}>{commandList.map(c=><option key={c}>{c}</option>)}</select></td><td className="px-3 py-2 text-slate-500">{name.startsWith('Swipe')||name.startsWith('Circle')?'Dynamic':'Static'}</td></tr>)}</tbody></table></div><div className="mt-3 text-[10px] text-slate-500">Frame hold and cooldown apply to all recognized gestures.</div></div>}

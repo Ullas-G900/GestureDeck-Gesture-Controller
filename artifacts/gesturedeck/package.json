@@ -8,7 +8,7 @@
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/vision/geometry.test.ts"
+    "test": "tsx --test src/vision/geometry.test.ts src/apps/presentationFiles.test.ts"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -76,6 +76,8 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.1.0"
+    "@mediapipe/tasks-vision": "^1.1.0",
+    "pdfjs-dist": "^6.4.299",
+    "pptx-browser": "^4.1.5"
   }
 }
