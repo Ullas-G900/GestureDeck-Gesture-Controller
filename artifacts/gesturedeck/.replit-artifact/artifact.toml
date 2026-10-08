@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "GestureDeck"
+description = "A touch-free gesture controller that recognizes hand movements from the webcam and uses them to control a media player, presentation, and extensible device actions."
+version = "1.0.0"
+id = "artifacts/gesturedeck"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25713
+
+[services.development]
+run = "pnpm --filter @workspace/gesturedeck run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/gesturedeck", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/gesturedeck/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25713"
+BASE_PATH = "/"
