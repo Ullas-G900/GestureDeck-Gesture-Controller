@@ -17,16 +17,16 @@ export const slides = [
   {
     eyebrow: '04 / THE INTERACTION',
     title: 'Hold to confirm.\nAct with confidence.',
-    body: 'A short frame hold filters transitional poses. Cooldown prevents repeated triggers. Confidence gates uncertain frames.',
+    body: 'A short frame hold filters transitional poses. Call Nurse uses a separate two-second hold. Cooldown prevents repeated triggers.',
   },
   {
     eyebrow: '05 / THE USE CASES',
     title: 'Designed for\nhands-full moments.',
-    body: 'Presentations, accessible control, kitchens, clinical environments, and smart spaces all benefit from touch-free input.',
+    body: 'Presentations, accessibility demos, kitchens, and hospital workflow demonstrations with synthetic imagery can show the value of touch-free input.',
   },
   {
     eyebrow: '06 / WHAT NEXT',
     title: 'Your hands.\nYour interface.',
-    body: 'GestureDeck is a client-side prototype. Train a personal pose, remap commands, or connect a relay when the application is ready.',
+    body: 'GestureDeck is a browser-local prototype. Try the synthetic Medical Viewer and simulated nurse alert; neither is for clinical use.',
   },
 ] as const;

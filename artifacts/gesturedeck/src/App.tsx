@@ -1,62 +1,59 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Aperture, Camera, ChevronLeft, ChevronRight, CircleHelp, Download, Hand, Keyboard, Layers3, Pause, Play, Plus, Radio, RefreshCw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, Upload, Volume2, X } from 'lucide-react';
-import { commandBus, type Command, type CommandEvent } from './commands/commandBus';
+import { Activity, Aperture, Camera, ChevronLeft, ChevronRight, CircleHelp, Download, Hand, Keyboard, Layers3, Pause, Play, Plus, RefreshCw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, Upload, Volume2, X } from 'lucide-react';
+import { commandBus, type Command } from './commands/commandBus';
 import { createTone, tracks } from './apps/MediaPlayer';
 import { slides } from './apps/Slides';
 import { applyVirtualDeviceCommand, initialVirtualDevices } from './apps/VirtualDevices';
 import { disposeImportedPresentation, type ImportedPresentation } from './apps/importedPresentation';
 import { PresentationViewer } from './components/PresentationViewer';
+import { MedicalViewer } from './components/MedicalViewer';
+import { CallNurseBanner } from './components/CallNurseBanner';
+import { VirtualDevicesPanel } from './components/VirtualDevicesPanel';
+import {
+  CALL_NURSE_HOLD_MS,
+  careScenarioPresets,
+  commandList,
+  defaultMapping,
+  gestureHoldProgress,
+  isGestureHoldComplete,
+  mappingForScenario,
+  type CareScenario,
+  type DashboardEvent,
+  type DashboardTab,
+  type DemoApp,
+  type GestureAction,
+  type GestureMap,
+} from './apps/careMode';
 import { CONNECTIONS, classifyStatic, normalizedFeatures, smoothHand, type Hand as LandmarkHand } from './vision/features';
 import { DynamicClassifier } from './vision/dynamicClassifier';
 import { createDetector, type Detector } from './vision/handLandmarker';
 import { predictKnn, type TrainingSample } from './vision/knn';
 
-type Tab='Demo App'|'Gesture Map'|'Train'|'Hardware'|'Log';
-type Mapping=Record<string,Command>;
 type Settings={hold:number;cooldown:number;threshold:number};
-const defaults:Mapping={'Open Palm':'Pause','Thumbs Up':'Play','Point Left':'Previous','Point Right':'Next','Closed Fist':'Stop','Victory':'Volume up','Swipe Left':'Previous','Swipe Right':'Next','Swipe Up':'Volume up','Swipe Down':'Volume down','Circle CW':'Seek','Circle CCW':'Seek'};
-const commandList:Command[]=['Pause','Play','Previous','Next','Stop','Volume up','Volume down','Mute','Seek','Rotate','Start','Exit fullscreen'];
 function readStored<T>(key:string,fallback:T):T{try{const v=localStorage.getItem('gesturedeck:'+key);return v?JSON.parse(v) as T:fallback;}catch{return fallback;}}
 function useStored<T>(key:string,initial:T):[T,(v:T|((x:T)=>T))=>void]{
   const [value,setValue]=useState<T>(()=>readStored(key,initial));
   useEffect(()=>{try{localStorage.setItem('gesturedeck:'+key,JSON.stringify(value));}catch{}},[key,value]);
   return [value,setValue];
 }
-function createRelayChannel():string{
-  try{const saved=localStorage.getItem('gesturedeck:relayChannel');if(saved&&/^[a-f0-9]{32}$/.test(saved))return saved;}catch{}
-  const bytes=crypto.getRandomValues(new Uint8Array(16));
-  const channel=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
-  try{localStorage.setItem('gesturedeck:relayChannel',channel);}catch{}
-  return channel;
-}
-function relaySocketUrl(role:'controller'|'device',channel:string):string{
-  const url=new URL('/api/ws',window.location.origin);
-  url.protocol=window.location.protocol==='https:'?'wss:':'ws:';
-  url.searchParams.set('channel',channel);
-  url.searchParams.set('role',role);
-  return url.toString();
-}
-function initialRelayEndpoint(channel:string):string{
-  const saved=readStored<string>('wsUrl','');
-  return saved&&saved!=='ws://localhost:8765'?saved:relaySocketUrl('controller',channel);
-}
 function App(){
-  const [tab,setTab]=useState<Tab>('Demo App'),[app,setApp]=useStored<'Media Player'|'Presentation Viewer'>('app','Media Player');
-  const [mapping,setMapping]=useStored<Mapping>('mappings',defaults);
+  const [careScenario,setCareScenario]=useStored<CareScenario|null>('careScenario',null);
+  const [tab,setTab]=useState<DashboardTab>(()=>careScenario==='Bedside Patient'?'Devices':'Demo App'),[app,setApp]=useStored<DemoApp>('app',careScenario==='Operating Room'?'Medical Viewer':'Media Player');
+  const [mapping,setMapping]=useStored<GestureMap>('mappings',defaultMapping);
   const [settings,setSettings]=useStored<Settings>('settings',{hold:7,cooldown:800,threshold:70});
   const [samples,setSamples]=useStored<TrainingSample[]>('trained',[]);
-  const [events,setEvents]=useState<CommandEvent[]>([]),[toasts,setToasts]=useState<{id:number;text:string}[]>([]);
+  const [events,setEvents]=useState<DashboardEvent[]>([]),[toasts,setToasts]=useState<{id:number;text:string}[]>([]);
   const [cameraState,setCameraState]=useState('Camera off'),[modelState,setModelState]=useState('Not loaded'),[fps,setFps]=useState(0),[lowLight,setLowLight]=useState(false),[isPresenting,setIsPresenting]=useState(false);
   const [gesture,setGesture]=useState('No hand detected'),[confidence,setConfidence]=useState(0),[holdProgress,setHoldProgress]=useState(0),[pipeline,setPipeline]=useState(0);
   const [error,setError]=useState(''),[showSettings,setShowSettings]=useState(false),[showOnboard,setShowOnboard]=useState(()=>!localStorage.getItem('gesturedeck:onboarded'));
   const [track,setTrack]=useState(0),[playing,setPlaying]=useState(false),[volume,setVolume]=useState(55),[muted,setMuted]=useState(false),[slide,setSlide]=useState(0),[practice,setPractice]=useState(false),[practiceIndex,setPracticeIndex]=useState(0);
+  const [medicalSlice,setMedicalSlice]=useState(0),[medicalZoom,setMedicalZoom]=useState(1),[medicalRotation,setMedicalRotation]=useState(0),[medicalPlaying,setMedicalPlaying]=useState(true),[nurseCallActive,setNurseCallActive]=useState(false);
   const [importedPresentation,setImportedPresentation]=useState<ImportedPresentation|null>(null);
   const presentationSlideCount=importedPresentation?.pageCount??slides.length;
   const [trainName,setTrainName]=useState('My gesture'),[recording,setRecording]=useState(false),[captureCount,setCaptureCount]=useState(0),[countdown,setCountdown]=useState(0);
-  const [relayChannel]=useState(createRelayChannel);
-  const [wsUrl,setWsUrl]=useStored('wsUrl',initialRelayEndpoint(relayChannel)),[wsStatus,setWsStatus]=useState('Disconnected'),[wsDeviceCount,setWsDeviceCount]=useState(0),[virtualDevices,setVirtualDevices]=useStored('devices',initialVirtualDevices);
-  const videoRef=useRef<HTMLVideoElement>(null),canvasRef=useRef<HTMLCanvasElement>(null),streamRef=useRef<MediaStream|null>(null),detectorRef=useRef<Detector|null>(null),rafRef=useRef(0),audioRef=useRef<AudioContext|null>(null),oscRef=useRef<OscillatorNode|null>(null),gainRef=useRef<GainNode|null>(null),socketRef=useRef<WebSocket|null>(null),lightCanvasRef=useRef<HTMLCanvasElement|null>(null),countdownTimerRef=useRef<number|null>(null);
-  const settingsRef=useRef(settings),mappingRef=useRef(mapping),samplesRef=useRef(samples),heldRef=useRef({name:'',frames:0}),lastCommandRef=useRef(0),lastGestureRef=useRef(''),smoothRef=useRef<LandmarkHand|null>(null),dynamicRef=useRef(new DynamicClassifier()),frameRef=useRef({last:0,count:0,stamp:0});
+  const [virtualDevices,setVirtualDevices]=useStored('devices',initialVirtualDevices);
+  const videoRef=useRef<HTMLVideoElement>(null),canvasRef=useRef<HTMLCanvasElement>(null),streamRef=useRef<MediaStream|null>(null),detectorRef=useRef<Detector|null>(null),rafRef=useRef(0),audioRef=useRef<AudioContext|null>(null),oscRef=useRef<OscillatorNode|null>(null),gainRef=useRef<GainNode|null>(null),lightCanvasRef=useRef<HTMLCanvasElement|null>(null),countdownTimerRef=useRef<number|null>(null);
+  const settingsRef=useRef(settings),mappingRef=useRef(mapping),samplesRef=useRef(samples),heldRef=useRef({name:'',frames:0,startedAt:0,fired:false}),lastCommandRef=useRef(0),lastGestureRef=useRef(''),smoothRef=useRef<LandmarkHand|null>(null),dynamicRef=useRef(new DynamicClassifier()),frameRef=useRef({last:0,count:0,stamp:0});
   const recordingRef=useRef(false),trainNameRef=useRef(trainName),progressStampRef=useRef(0);
   settingsRef.current=settings;mappingRef.current=mapping;samplesRef.current=samples;
   recordingRef.current=recording;trainNameRef.current=trainName;
@@ -68,26 +65,85 @@ function App(){
   const stopTone=useCallback(()=>{if(oscRef.current){try{oscRef.current.stop();}catch{}oscRef.current=null;}setPlaying(false);},[]);
   const nextTrack=useCallback((delta:number)=>{setTrack(i=>(i+delta+tracks.length)%tracks.length);if(playing)window.setTimeout(()=>playTone((track+delta+tracks.length)%tracks.length),0);},[playing,playTone,track]);
   const doCommand=useCallback((command:Command,sourceGesture='Keyboard',conf=1)=>{
-    if(command==='Play'||command==='Start'){if(app==='Presentation Viewer'){fullscreen();}else playTone(track);}
-    if(command==='Pause'){stopTone();}
-    if(command==='Stop'){stopTone();if(app==='Presentation Viewer'&&document.fullscreenElement)void document.exitFullscreen();}
-    if(command==='Next'){if(app==='Presentation Viewer')setSlide(i=>Math.min(presentationSlideCount-1,i+1));else nextTrack(1);}
-    if(command==='Previous'){if(app==='Presentation Viewer')setSlide(i=>Math.max(0,i-1));else nextTrack(-1);}
-    if(command==='Volume up')setVolume(v=>Math.min(100,v+8));
-    if(command==='Volume down')setVolume(v=>Math.max(0,v-8));
+    if(command==='Play'||command==='Start'){
+      if(app==='Presentation Viewer')fullscreen();
+      else if(app==='Medical Viewer')setMedicalPlaying(true);
+      else if(!(careScenario==='Bedside Patient'&&tab==='Devices'))playTone(track);
+    }
+    if(command==='Pause'){if(app==='Medical Viewer')setMedicalPlaying(false);else stopTone();}
+    if(command==='Stop'){
+      stopTone();
+      if(app==='Medical Viewer'){setMedicalPlaying(false);setMedicalZoom(1);setMedicalRotation(0);}
+      if(app==='Presentation Viewer'&&document.fullscreenElement)void document.exitFullscreen();
+    }
+    if(command==='Next'){
+      if(app==='Presentation Viewer')setSlide(i=>Math.min(presentationSlideCount-1,i+1));
+      else if(app==='Medical Viewer')setMedicalSlice(i=>Math.min(7,i+1));
+      else nextTrack(1);
+    }
+    if(command==='Previous'){
+      if(app==='Presentation Viewer')setSlide(i=>Math.max(0,i-1));
+      else if(app==='Medical Viewer')setMedicalSlice(i=>Math.max(0,i-1));
+      else nextTrack(-1);
+    }
+    if(command==='Volume up'){
+      if(app==='Medical Viewer')setMedicalZoom(v=>Math.min(2.5,Number((v+.25).toFixed(2))));
+      else setVolume(v=>Math.min(100,v+8));
+    }
+    if(command==='Volume down'){
+      if(app==='Medical Viewer')setMedicalZoom(v=>Math.max(1,Number((v-.25).toFixed(2))));
+      else setVolume(v=>Math.max(0,v-8));
+    }
     if(command==='Mute')setMuted(v=>!v);
     if(command==='Exit fullscreen'&&document.fullscreenElement)void document.exitFullscreen();
-    if(command==='Seek'){if(app==='Presentation Viewer')setSlide(i=>Math.min(presentationSlideCount-1,i+1));else if(oscRef.current)playTone(track);}
+    if(command==='Seek'){
+      if(app==='Presentation Viewer')setSlide(i=>Math.min(presentationSlideCount-1,i+1));
+      else if(app==='Medical Viewer')setMedicalZoom(v=>Math.min(2.5,Number((v+.25).toFixed(2))));
+      else if(oscRef.current)playTone(track);
+    }
+    if(command==='Rotate'&&app==='Medical Viewer')setMedicalRotation(v=>(v+90)%360);
     setVirtualDevices(devices=>applyVirtualDeviceCommand(devices,command));
     const event={command,gesture:sourceGesture,confidence:conf,at:Date.now()};
     setEvents(prev=>[event,...prev].slice(0,100));setPipeline(5);
-    const labels:Record<Command,string>={Play:app==='Media Player'?'Playing '+tracks[track]:'Presentation started',Start:'Started · studio light on',Pause:app==='Media Player'?'Playback paused':'Paused',Previous:app==='Media Player'?'Previous track':'Previous slide',Next:app==='Media Player'?'Next track':'Next slide',Stop:'Stopped · virtual devices off', 'Volume up':'Volume increased','Volume down':'Volume decreased',Mute:muted?'Audio unmuted':'Audio muted',Seek:'Seek forward',Rotate:'Virtual fan toggled','Exit fullscreen':'Presentation closed'};
+    const labels:Record<Command,string>={Play:app==='Media Player'?'Playing '+tracks[track]:app==='Medical Viewer'?'Scan playback started':'Presentation started',Start:'Started · studio light on',Pause:app==='Media Player'?'Playback paused':app==='Medical Viewer'?'Scan playback paused':'Paused',Previous:app==='Media Player'?'Previous track':app==='Medical Viewer'?'Previous scan slice':'Previous slide',Next:app==='Media Player'?'Next track':app==='Medical Viewer'?'Next scan slice':'Next slide',Stop:app==='Medical Viewer'?'Scan reset · playback stopped':'Stopped · virtual devices off','Volume up':app==='Medical Viewer'?'Scan zoom increased':'Volume increased','Volume down':app==='Medical Viewer'?'Scan zoom decreased':'Volume decreased',Mute:muted?'Audio unmuted':'Audio muted',Seek:app==='Medical Viewer'?'Scan zoom increased':'Seek forward',Rotate:app==='Medical Viewer'?'Scan rotated':'Virtual fan toggled','Exit fullscreen':'Presentation closed'};
     notify(labels[command]||command);
-    const socket=socketRef.current;if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'command',command,gesture:sourceGesture,confidence:conf,at:event.at}));
-  },[app,fullscreen,muted,nextTrack,notify,playTone,presentationSlideCount,slide,stopTone,track]);
+  },[app,careScenario,fullscreen,muted,nextTrack,notify,playTone,presentationSlideCount,slide,stopTone,tab,track]);
+  const beepNurse=useCallback(()=>{
+    try{
+      const context=audioRef.current??new AudioContext();
+      audioRef.current=context;
+      const play=()=>{
+        if(context.state!=='running')return;
+        const oscillator=context.createOscillator(),gain=context.createGain(),now=context.currentTime;
+        oscillator.type='sine';oscillator.frequency.setValueAtTime(880,now);
+        gain.gain.setValueAtTime(.0001,now);gain.gain.linearRampToValueAtTime(.2,now+.025);gain.gain.exponentialRampToValueAtTime(.0001,now+.28);
+        oscillator.connect(gain);gain.connect(context.destination);oscillator.onended=()=>{oscillator.disconnect();gain.disconnect();};
+        oscillator.start(now);oscillator.stop(now+.3);
+      };
+      if(context.state==='running')play();else void context.resume().then(play).catch(()=>undefined);
+    }catch{}
+  },[]);
+  const fireNurseCall=useCallback((sourceGesture:string,conf:number)=>{
+    setNurseCallActive(true);
+    setEvents(prev=>[{command:'Call Nurse' as const,gesture:sourceGesture,confidence:conf,at:Date.now()},...prev].slice(0,100));
+    setPipeline(5);notify('Simulated Call Nurse alert activated. No real call was placed.');beepNurse();
+  },[beepNurse,notify]);
+  const loadScenario=useCallback((scenario:CareScenario)=>{
+    setCareScenario(scenario);
+    setMapping(current=>mappingForScenario(scenario,current));
+    const preset=careScenarioPresets[scenario];
+    setApp(preset.app==='Virtual Devices'?'Media Player':preset.app);setTab(preset.tab);
+    if(scenario==='Operating Room'){setMedicalSlice(0);setMedicalZoom(1);setMedicalRotation(0);setMedicalPlaying(true);}
+  },[setApp,setCareScenario,setMapping]);
   useEffect(()=>{const unsubscribe=commandBus.subscribe(e=>doCommand(e.command,e.gesture,e.confidence));return()=>{unsubscribe();};},[doCommand]);
   useEffect(()=>()=>disposeImportedPresentation(importedPresentation),[importedPresentation]);
+  useEffect(()=>{
+    if(app!=='Medical Viewer'||!medicalPlaying)return;
+    const timer=window.setInterval(()=>setMedicalSlice(slice=>(slice+1)%8),1200);
+    return()=>window.clearInterval(timer);
+  },[app,medicalPlaying]);
    const startCamera=useCallback(()=>{
+      try{const context=audioRef.current??new AudioContext();audioRef.current=context;void context.resume().catch(()=>undefined);}catch{}
      const fail=(reason:unknown)=>{try{streamRef.current?.getTracks().forEach(t=>t.stop());}catch{}streamRef.current=null;if(videoRef.current)videoRef.current.srcObject=null;setCameraState('Camera error');setModelState(detectorRef.current?'Model loaded':'Model unavailable');setError(reason instanceof Error?reason.message:'Camera or model could not start.');};
      const run=async()=>{
     setError('');setCameraState('Requesting access');
@@ -106,17 +162,28 @@ function App(){
             const result=staticResult||trained;let name=result?.name||dyn||'';
             if(dyn)name=dyn;
             const conf=result?.confidence??(dyn?.startsWith('Circle') ? .78 : dyn?.startsWith('Swipe') ? .82 : 0);
-            // A swipe/circle is already a multi-frame temporal event; the window itself is its hold confirmation.
-            if(dyn)heldRef.current={name:dyn,frames:Math.max(0,settingsRef.current.hold-1)};
+             // Swipes/circles keep their existing temporal confirmation unless mapped to Call Nurse.
+             if(dyn){
+               const dynamicAction=mappingRef.current[dyn];
+               if(dynamicAction==='Call Nurse'){
+                 if(heldRef.current.name!==dyn)heldRef.current={name:dyn,frames:0,startedAt:time,fired:false};
+               }else heldRef.current={name:dyn,frames:Math.max(0,settingsRef.current.hold-1),startedAt:time,fired:false};
+             }
             if(name){if(name!==lastGestureRef.current){lastGestureRef.current=name;setGesture(name);setConfidence(conf);setPipeline(3);}
               const threshold=settingsRef.current.threshold/100;
-              if(conf>=threshold){if(heldRef.current.name===name)heldRef.current.frames++;else heldRef.current={name,frames:1};
-                if(time-progressStampRef.current>90){setHoldProgress(Math.min(1,heldRef.current.frames/settingsRef.current.hold));setConfidence(conf);progressStampRef.current=time;}
-                if(heldRef.current.frames===settingsRef.current.hold&&time-lastCommandRef.current>=settingsRef.current.cooldown){const cmd=mappingRef.current[name];if(cmd){lastCommandRef.current=time;commandBus.emit(cmd,name,conf);heldRef.current.frames=0;setPipeline(4);}}
-              }else{heldRef.current={name:'',frames:0};setHoldProgress(0);}
-            }else{heldRef.current={name:'',frames:0};setHoldProgress(0);lastGestureRef.current='';if(lastGestureRef.current==='')setGesture('Unknown pose');setConfidence(0);}
+               if(conf>=threshold){
+                 if(heldRef.current.name===name)heldRef.current.frames++;
+                 else heldRef.current={name,frames:1,startedAt:time,fired:false};
+                 const action=mappingRef.current[name],elapsed=time-heldRef.current.startedAt;
+                 if(time-progressStampRef.current>90){setHoldProgress(gestureHoldProgress(action,heldRef.current.frames,elapsed,settingsRef.current.hold));setConfidence(conf);progressStampRef.current=time;}
+                 if(isGestureHoldComplete(action,heldRef.current.frames,elapsed,settingsRef.current.hold)&&time-lastCommandRef.current>=settingsRef.current.cooldown&&(action!=='Call Nurse'||!heldRef.current.fired)){
+                   const cmd=mappingRef.current[name];
+                   if(cmd){lastCommandRef.current=time;if(cmd==='Call Nurse'){fireNurseCall(name,conf);heldRef.current.fired=true;}else{commandBus.emit(cmd,name,conf);heldRef.current.frames=0;}setPipeline(4);}
+                 }
+               }else{heldRef.current={name:'',frames:0,startedAt:0,fired:false};setHoldProgress(0);}
+             }else{heldRef.current={name:'',frames:0,startedAt:0,fired:false};setHoldProgress(0);lastGestureRef.current='';if(lastGestureRef.current==='')setGesture('Unknown pose');setConfidence(0);}
             if(recordingRef.current&&samplesRef.current.length<600){const name=trainNameRef.current;setSamples(prev=>[...prev,{name,features:normalizedFeatures(hand)}]);setCaptureCount(n=>n+1);if(samplesRef.current.filter(s=>s.name===name).length>=39){setRecording(false);recordingRef.current=false;notify('Capture complete: 40 pose samples saved.');}}
-          }else{smoothRef.current=null;dynamicRef.current.reset();heldRef.current={name:'',frames:0};setHoldProgress(0);setGesture('No hand detected');setConfidence(0);setPipeline(1);}
+           }else{smoothRef.current=null;dynamicRef.current.reset();heldRef.current={name:'',frames:0,startedAt:0,fired:false};setHoldProgress(0);setGesture('No hand detected');setConfidence(0);setPipeline(1);}
         }
         const f=frameRef.current;f.count++;if(time-f.stamp>1000){setFps(Math.round(f.count*1000/(time-f.stamp)));f.count=0;f.stamp=time;}
         rafRef.current=requestAnimationFrame(loop);
@@ -124,16 +191,13 @@ function App(){
       frameRef.current.stamp=performance.now();rafRef.current=requestAnimationFrame(loop);
      };
      void run().catch(fail);
-   },[notify,recording,trainName]);
+    },[fireNurseCall,notify,recording,trainName]);
   const stopCamera=useCallback(()=>{cancelAnimationFrame(rafRef.current);if(countdownTimerRef.current!==null)window.clearInterval(countdownTimerRef.current);countdownTimerRef.current=null;setCountdown(0);setRecording(false);recordingRef.current=false;streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;detectorRef.current?.close();detectorRef.current=null;if(videoRef.current)videoRef.current.srcObject=null;setCameraState('Camera off');setModelState('Not loaded');setFps(0);setGesture('No hand detected');setPipeline(0);smoothRef.current=null;},[]);
-  useEffect(()=>()=>{cancelAnimationFrame(rafRef.current);if(countdownTimerRef.current!==null)window.clearInterval(countdownTimerRef.current);streamRef.current?.getTracks().forEach(t=>t.stop());detectorRef.current?.close();socketRef.current?.close();if(oscRef.current)try{oscRef.current.stop();}catch{}},[]);
+   useEffect(()=>()=>{cancelAnimationFrame(rafRef.current);if(countdownTimerRef.current!==null)window.clearInterval(countdownTimerRef.current);streamRef.current?.getTracks().forEach(t=>t.stop());detectorRef.current?.close();if(oscRef.current)try{oscRef.current.stop();}catch{}},[]);
   useEffect(()=>{const update=()=>setIsPresenting(Boolean(document.fullscreenElement));document.addEventListener('fullscreenchange',update);return()=>document.removeEventListener('fullscreenchange',update);},[]);
   useEffect(()=>{const keys:Record<string,Command>={Space:'Pause',ArrowRight:'Next',ArrowLeft:'Previous',ArrowUp:'Volume up',ArrowDown:'Volume down',Enter:'Play',Escape:'Stop',KeyM:'Mute',KeyS:'Seek',KeyR:'Rotate',KeyP:'Start',KeyF:'Exit fullscreen'};const handler=(e:KeyboardEvent)=>{const target=e.target as HTMLElement|null;if(showSettings||showOnboard||target?.closest('input,textarea,select,button,a,[contenteditable="true"],[role="dialog"]'))return;const c=keys[e.code];if(c){e.preventDefault();commandBus.emit(c,'Keyboard');}};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[showSettings,showOnboard]);
   useEffect(()=>{if(gainRef.current)gainRef.current.gain.setTargetAtTime((muted?0:volume/100)*.08,audioRef.current?.currentTime||0,.04);},[volume,muted]);
-  const connectSocket=()=>{try{const endpoint=new URL(wsUrl);if(!['ws:','wss:'].includes(endpoint.protocol)||(window.location.protocol==='https:'&&endpoint.protocol!=='wss:'))throw new Error('Use a secure wss:// endpoint in the HTTPS preview.');socketRef.current?.close();const ws=new WebSocket(endpoint);socketRef.current=ws;setWsDeviceCount(0);setWsStatus('Connecting');ws.onopen=()=>setWsStatus('Connected');ws.onclose=()=>{setWsStatus('Disconnected');setWsDeviceCount(0);};ws.onerror=()=>setWsStatus('Connection error');ws.onmessage=event=>{if(typeof event.data!=='string')return;try{const message=JSON.parse(event.data) as {type?:string;devices?:number};if(message.type==='status'&&Number.isInteger(message.devices))setWsDeviceCount(Math.max(0,message.devices??0));}catch{}};}catch(e){setWsStatus(e instanceof Error&&e.message.includes('secure')?'Use wss:// on HTTPS':'Invalid endpoint');}};
-  const useBuiltInRelay=()=>setWsUrl(relaySocketUrl('controller',relayChannel));
-  const copyDeviceEndpoint=async()=>{try{await navigator.clipboard.writeText(relaySocketUrl('device',relayChannel));notify('GestureDeck device URL copied. Share it only with the device you are pairing.');}catch{notify('Could not copy the device URL. Check clipboard permission.');}};
-  const disconnectSocket=()=>{socketRef.current?.close();socketRef.current=null;setWsStatus('Disconnected');};
+   const chooseScenario=(scenario:CareScenario)=>loadScenario(scenario);
   const startPractice=()=>{setPractice(true);setPracticeIndex(0);notify('Practice mode ready. Perform the requested gesture.');};
   useEffect(()=>{if(practice&&gesture===practiceGestures[practiceIndex]){notify('Practice gesture recognized: '+gesture);if(practiceIndex>=practiceGestures.length-1){setPractice(false);notify('Practice complete.');}else setPracticeIndex(i=>i+1);}},[gesture,practice,practiceIndex,notify]);
   const addTraining=()=>{if(countdownTimerRef.current!==null||recordingRef.current)return;setCaptureCount(0);setSamples(prev=>prev.filter(s=>s.name!==trainName));setMapping(prev=>({...prev,[trainName]:prev[trainName]||'Play'}));let remaining=3;setCountdown(remaining);notify('Capture begins in 3 seconds. Hold the gesture steady.');countdownTimerRef.current=window.setInterval(()=>{remaining-=1;if(remaining<=0){if(countdownTimerRef.current!==null)window.clearInterval(countdownTimerRef.current);countdownTimerRef.current=null;setCountdown(0);recordingRef.current=true;setRecording(true);notify('Recording 40 landmark samples.');return;}setCountdown(remaining);notify(`Capture begins in ${remaining}…`);},1000);};
@@ -141,10 +205,11 @@ function App(){
   const exportTraining=()=>{const blob=new Blob([JSON.stringify(samples,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='gesturedeck-training.json';a.click();URL.revokeObjectURL(a.href);};
   const importTraining=(file?:File)=>{if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const parsed=JSON.parse(String(reader.result)) as TrainingSample[];if(!Array.isArray(parsed)||parsed.some(s=>!s.name||!Array.isArray(s.features)||s.features.length!==63||s.features.some(n=>!Number.isFinite(n))))throw Error();setSamples(parsed);setMapping(m=>{const next={...m};parsed.forEach(s=>{next[s.name]=next[s.name]||'Play';});return next;});notify('Training set imported.');}catch{notify('That training file is not valid.');}};reader.readAsText(file);};
   const gestureNames=['Open Palm','Thumbs Up','Point Left','Point Right','Closed Fist','Victory','Swipe Left','Swipe Right','Swipe Up','Swipe Down','Circle CW','Circle CCW',...new Set(samples.map(s=>s.name))];
+  const nurseHold=mapping[gesture]==='Call Nurse';
   return <div className="app-shell noise min-h-[100dvh]">
+    <CallNurseBanner active={nurseCallActive} onDismiss={()=>setNurseCallActive(false)}/>
     {countdown>0&&<div className="fixed left-1/2 top-20 z-40 -translate-x-1/2 rounded-xl border border-cyan-200/20 bg-[#0b1d2f]/95 px-5 py-3 text-center shadow-xl" role="status"><div className="eyebrow">GET READY</div><div className="mt-1 text-sm font-bold">Capturing in {countdown}…</div><button className="btn mt-2 !py-1.5" onClick={cancelTraining}>Cancel capture</button></div>}
     {recording&&<div className="fixed left-1/2 top-20 z-40 -translate-x-1/2 rounded-xl border border-cyan-200/20 bg-[#0b1d2f]/95 px-5 py-3 text-center shadow-xl" role="status"><div className="eyebrow">RECORDING GESTURE</div><div className="mt-1 text-sm font-bold">{captureCount} / 40 samples</div><button className="btn mt-2 !py-1.5" onClick={cancelTraining}>Cancel capture</button></div>}
-    {tab==='Hardware'&&<div className="fixed bottom-4 right-4 z-40 w-[min(360px,calc(100vw-2rem))] rounded-xl border border-cyan-100/15 bg-[#0b1d2f]/95 p-3 shadow-xl backdrop-blur" role="status"><div className="flex items-center justify-between gap-3"><div><div className="eyebrow">GESTUREDECK RELAY</div><div className="mt-1 text-xs font-bold">{wsStatus} · {wsDeviceCount} device{wsDeviceCount===1?'':'s'}</div></div><div className="flex gap-2"><button className="btn !px-2 !py-1.5 text-[10px]" onClick={useBuiltInRelay}>Use built-in</button><button className="btn btn-primary !px-2 !py-1.5 text-[10px]" onClick={()=>void copyDeviceEndpoint()}>Copy device URL</button></div></div></div>}
     <header className="sticky top-0 z-30 border-b border-white/5 bg-[#081423]/90 backdrop-blur-xl">
       <div className="mx-auto flex max-w-[1560px] items-center justify-between gap-4 px-4 py-3 sm:px-6">
         <div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl border border-cyan-200/20 bg-cyan-300/10 text-cyan-200"><Aperture size={19}/></div><div><div className="text-[15px] font-extrabold tracking-tight">GestureDeck</div><div className="eyebrow hidden sm:block">ZERO ONE / HAND CONTROLLER</div></div></div>
@@ -154,7 +219,7 @@ function App(){
       </div>
     </header>
     <main className="mx-auto max-w-[1560px] px-4 py-5 sm:px-6">
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow mb-1">TOUCH-FREE CONTROL SURFACE</div><h1 className="text-2xl font-extrabold tracking-[-.04em] sm:text-[29px]">Make the room respond.</h1></div><div className="flex gap-2"><button className="btn" onClick={startPractice}><Sparkles size={14}/>Practice mode</button>{cameraState==='Camera live'?<button className="btn btn-danger" onClick={stopCamera}><Camera size={14}/>Stop camera</button>:<button className="btn btn-primary" onClick={()=>void startCamera()}><Camera size={14}/>Start camera</button>}</div></div>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><div className="eyebrow mb-1">TOUCH-FREE CONTROL SURFACE</div><h1 className="text-2xl font-extrabold tracking-[-.04em] sm:text-[29px]">Make the room respond.</h1></div><div className="flex flex-wrap items-end gap-2"><label className="min-w-[190px]"><span className="eyebrow mb-1 block">CARE MODE SCENARIO</span><select className="control !py-2" value={careScenario??''} onChange={e=>chooseScenario(e.target.value as CareScenario)} aria-label="Care Mode scenario"><option value="" disabled>Choose scenario</option><option value="Operating Room">Operating Room</option><option value="Bedside Patient">Bedside Patient</option></select></label><button className="btn" onClick={startPractice}><Sparkles size={14}/>Practice mode</button>{cameraState==='Camera live'?<button className="btn btn-danger" onClick={stopCamera}><Camera size={14}/>Stop camera</button>:<button className="btn btn-primary" onClick={()=>void startCamera()}><Camera size={14}/>Start camera</button>}</div></div>
       {error&&<div role="alert" className="mb-4 flex items-center justify-between rounded-xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm text-rose-100"><span>{error}</span><button className="btn" onClick={()=>void startCamera()}><RefreshCw size={13}/>Retry</button></div>}
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.06fr)_minmax(460px,.94fr)]">
         <section className="glass overflow-hidden rounded-2xl">
@@ -164,7 +229,7 @@ function App(){
             <canvas ref={canvasRef} aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover"/>
             {cameraState!=='Camera live'&&<div className="absolute inset-0 flex flex-col gap-3 px-6 text-center font-light text-[color:var(--color-slate-700)] bg-[color:var(--color-gray-50)] border-t-[color:var(--color-slate-500)] border-r-[color:var(--color-slate-500)] border-b-[color:var(--color-slate-500)] border-l-[color:var(--color-slate-500)] justify-center items-center"><div className="grid h-14 w-14 place-items-center rounded-2xl border border-cyan-100/15 bg-cyan-100/5 text-cyan-200"><Camera size={24}/></div><div className="text-sm font-bold">Camera stays off until you start</div><p className="max-w-sm text-xs leading-5 text-[color:var(--color-slate-700)]">Your video is processed locally in this browser. Nothing is recorded or uploaded.</p><button className="btn btn-primary" onClick={()=>void startCamera()}>Enable camera</button></div>}
             {cameraState==='Camera live'&&<div className="absolute left-3 top-3 chip bg-[#071320bb]"><i className={`dot ${modelState==='Model loaded'?'live':'warn'}`}/>{modelState}</div>}
-            {cameraState==='Camera live'&&<div className="absolute bottom-3 left-3 rounded-xl border border-white/10 bg-[#071320dd] px-4 py-3 shadow-xl"><div className="eyebrow">CURRENT GESTURE</div><div className="mt-1 flex items-center gap-2"><div className="relative grid h-10 w-10 place-items-center rounded-full border border-cyan-200/30 text-[11px] font-bold text-cyan-100"><span className="absolute inset-0 rounded-full border-2 border-cyan-300" style={{clipPath:`inset(${100-holdProgress*100}% 0 0 0)`}}></span>{Math.round(holdProgress*100)}%</div><div><div className="text-sm font-extrabold">{gesture}</div><div className="mono text-[10px] text-slate-400">{Math.round(confidence*100)}% confidence</div></div></div></div>}
+            {cameraState==='Camera live'&&<div className="absolute bottom-3 left-3 rounded-xl border border-white/10 bg-[#071320dd] px-4 py-3 shadow-xl"><div className="eyebrow">CURRENT GESTURE</div><div className="mt-1 flex items-center gap-2"><div className={`relative grid h-10 w-10 place-items-center rounded-full border text-[11px] font-bold ${nurseHold?'border-rose-300/60 text-rose-100':'border-cyan-200/30 text-cyan-100'}`}><span className={`absolute inset-0 rounded-full border-2 ${nurseHold?'border-rose-300':'border-cyan-300'}`} style={{clipPath:`inset(${100-holdProgress*100}% 0 0 0)`}}></span>{Math.round(holdProgress*100)}%</div><div><div className="text-sm font-extrabold">{gesture}</div><div className="mono text-[10px] text-slate-400">{Math.round(confidence*100)}% confidence</div>{nurseHold&&<div className="text-[9px] font-bold text-rose-200">Hold {CALL_NURSE_HOLD_MS/1000}s · simulated alert</div>}</div></div></div>}
             {cameraState==='Camera live'&&lowLight&&<div className="absolute right-3 top-3 chip"><i className="dot warn"/>Low light detected</div>}
           </div>
           <div className="grid grid-cols-5 gap-1 border-t border-white/5 px-3 py-4 sm:px-5">
@@ -174,30 +239,30 @@ function App(){
         </section>
         <section className="glass min-h-[558px] overflow-hidden rounded-2xl">
           <div className="flex overflow-x-auto border-b border-white/5 px-3">
-            {(['Demo App','Gesture Map','Train','Hardware','Log'] as Tab[]).map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t}</button>)}
+            {(['Demo App','Gesture Map','Train','Devices','Log'] as DashboardTab[]).map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t}</button>)}
           </div>
           <div className="p-4 sm:p-5">
             {tab==='Demo App'&&<div>
-              <div className="mb-4 flex items-center justify-between gap-3"><div><div className="eyebrow">CONTROLLED EXPERIENCE</div><h2 className="mt-1 text-lg font-extrabold">Demo App</h2></div><div className="flex rounded-lg border border-white/10 bg-[#091726] p-1">{(['Media Player','Presentation Viewer'] as const).map(a=><button key={a} onClick={()=>setApp(a)} className={`rounded-md px-2.5 py-2 text-[10px] font-bold sm:text-[11px] ${app===a?'bg-cyan-200/15 text-cyan-100':'text-slate-400'}`}>{a==='Media Player'?'Media':'Slides'}</button>)}</div></div>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><div className="eyebrow">CONTROLLED EXPERIENCE</div><h2 className="mt-1 text-lg font-extrabold">Demo App</h2></div><div className="flex flex-wrap rounded-lg border border-white/10 bg-[#091726] p-1">{(['Media Player','Presentation Viewer','Medical Viewer'] as const).map(a=><button key={a} onClick={()=>{setApp(a);if(a==='Medical Viewer')setMedicalPlaying(true);}} className={`rounded-md px-2.5 py-2 text-[10px] font-bold sm:text-[11px] ${app===a?'bg-cyan-200/15 text-cyan-100':'text-slate-400'}`}>{a==='Media Player'?'Media':a==='Presentation Viewer'?'Slides':'Medical Viewer'}</button>)}</div></div>
               {app==='Media Player'?<div className="rounded-xl border border-white/8 bg-[#0a1929] p-4">
                 <div className="flex items-start justify-between"><div><div className="eyebrow">NOW {playing?'PLAYING':'QUEUED'}</div><h3 className="mt-2 text-xl font-extrabold">{tracks[track]}</h3><p className="mt-1 text-xs text-slate-400">GestureDeck generative tones · {track+1} of {tracks.length}</p></div><div className={`bars flex h-12 items-end gap-[4px] rounded-lg bg-cyan-300/[.07] px-3 py-2 ${playing?'':'opacity-35'}`}>{[18,28,13,25,32,17,27,11,22,30,16,25].map((h,i)=><span key={i} style={{height:h,animationDelay:`${i*.07}s`}}/>)}</div></div>
                 <div className="my-5 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-cyan-300" style={{width:playing?'38%':'12%'}}/></div>
                 <div className="flex items-center justify-center gap-3"><button className="btn !rounded-full !p-3" aria-label="Previous track" onClick={()=>nextTrack(-1)}><ChevronLeft size={17}/></button>{playing?<button className="btn btn-primary !rounded-full !p-3" aria-label="Pause" onClick={stopTone}><Pause size={18}/></button>:<button className="btn btn-primary !rounded-full !p-3" aria-label="Play" onClick={()=>playTone(track)}><Play size={18}/></button>}<button className="btn !rounded-full !p-3" aria-label="Stop" onClick={stopTone}><Square size={14}/></button><button className="btn !rounded-full !p-3" aria-label="Next track" onClick={()=>nextTrack(1)}><ChevronRight size={17}/></button></div>
                 <div className="mt-5 flex items-center gap-3"><Volume2 size={15} className="text-slate-400"/><input aria-label="Volume" type="range" min="0" max="100" value={volume} onChange={e=>setVolume(Number(e.target.value))} className="range"/><span className="mono w-9 text-right text-[10px] text-slate-400">{muted?'MUTE':volume+'%'}</span><button className="btn !px-2 !py-1.5" onClick={()=>setMuted(v=>!v)}>{muted?'Unmute':'Mute'}</button></div>
                 <div className="mt-4 border-t border-white/5 pt-3"><div className="eyebrow mb-2">UP NEXT</div>{tracks.map((name,i)=><button key={name} onClick={()=>{setTrack(i);if(playing)playTone(i);}} className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs ${i===track?'bg-cyan-200/[.08] text-cyan-100':'text-slate-400 hover:bg-white/[.03]'}`}><span>{String(i+1).padStart(2,'0')}　{name}</span>{i===track&&<span className="text-[9px] uppercase tracking-widest">Selected</span>}</button>)}</div>
-               </div>:<PresentationViewer slide={slide} onSlideChange={setSlide} imported={importedPresentation} onImportedChange={setImportedPresentation} isPresenting={isPresenting} onPresent={fullscreen}/>}
+                </div>:app==='Medical Viewer'?<MedicalViewer slice={medicalSlice} sliceCount={8} zoom={medicalZoom} rotation={medicalRotation} playing={medicalPlaying} onPrevious={()=>setMedicalSlice(i=>Math.max(0,i-1))} onNext={()=>setMedicalSlice(i=>Math.min(7,i+1))} onPlayPause={()=>setMedicalPlaying(v=>!v)} onStop={()=>{setMedicalPlaying(false);setMedicalZoom(1);setMedicalRotation(0);}} onZoomIn={()=>setMedicalZoom(v=>Math.min(2.5,Number((v+.25).toFixed(2))))} onZoomOut={()=>setMedicalZoom(v=>Math.max(1,Number((v-.25).toFixed(2))))} onRotate={()=>setMedicalRotation(v=>(v+90)%360)}/>:<PresentationViewer slide={slide} onSlideChange={setSlide} imported={importedPresentation} onImportedChange={setImportedPresentation} isPresenting={isPresenting} onPresent={fullscreen}/>}
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[.025] px-3 py-3"><div className="flex items-center gap-2"><div className="grid h-8 w-8 place-items-center rounded-lg bg-cyan-100/10 text-cyan-200"><Hand size={16}/></div><div><div className="text-xs font-bold">Practice Mode</div><div className="text-[10px] text-slate-500">Try each control gesture in sequence</div></div></div>{practice?<div className="flex items-center gap-2"><span className="chip">{practiceIndex+1}/{practiceGestures.length} · {practiceGestures[practiceIndex]}</span><button className="btn !py-1.5" onClick={()=>setPractice(false)}>End</button></div>:<button className="btn !py-1.5" onClick={startPractice}>Begin practice</button>}</div>
             </div>}
-            {tab==='Gesture Map'&&<div><div className="mb-4"><div className="eyebrow">PERSONALIZE INPUT</div><h2 className="mt-1 text-lg font-extrabold">Gesture map</h2><p className="mt-1 text-xs text-slate-400">Choose what each pose or motion does. Changes save in this browser.</p></div><div className="max-h-[445px] overflow-auto rounded-xl border border-white/7"><table className="w-full text-left text-xs"><thead className="sticky top-0 bg-[#102236] text-[10px] uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Gesture</th><th className="px-3 py-3">Command</th><th className="px-3 py-3">Type</th></tr></thead><tbody>{gestureNames.map(name=><tr key={name} className="border-t border-white/5"><td className="px-3 py-2.5 font-bold text-slate-200">{name}</td><td className="px-3 py-2"><select aria-label={`Command for ${name}`} className="control !w-auto min-w-32 !py-2" value={mapping[name]||'Pause'} onChange={e=>setMapping(m=>({...m,[name]:e.target.value as Command}))}>{commandList.map(c=><option key={c}>{c}</option>)}</select></td><td className="px-3 py-2 text-slate-500">{name.startsWith('Swipe')||name.startsWith('Circle')?'Dynamic':'Static'}</td></tr>)}</tbody></table></div><div className="mt-3 text-[10px] text-slate-500">Frame hold and cooldown apply to all recognized gestures.</div></div>}
+            {tab==='Gesture Map'&&<div><div className="mb-4"><div className="eyebrow">PERSONALIZE INPUT</div><h2 className="mt-1 text-lg font-extrabold">Gesture map</h2><p className="mt-1 text-xs text-slate-400">Choose what each pose or motion does. Changes save in this browser.</p></div><div className="max-h-[445px] overflow-auto rounded-xl border border-white/7"><table className="w-full text-left text-xs"><thead className="sticky top-0 bg-[#102236] text-[10px] uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Gesture</th><th className="px-3 py-3">Command</th><th className="px-3 py-3">Type</th></tr></thead><tbody>{gestureNames.map(name=><tr key={name} className="border-t border-white/5"><td className="px-3 py-2.5 font-bold text-slate-200">{name}</td><td className="px-3 py-2"><select aria-label={`Command for ${name}`} className="control !w-auto min-w-32 !py-2" value={mapping[name]||'Pause'} onChange={e=>setMapping(m=>({...m,[name]:e.target.value as GestureAction}))}>{commandList.filter(c=>!(c==='Call Nurse'&&(name.startsWith('Swipe')||name.startsWith('Circle')))).map(c=><option key={c}>{c}</option>)}</select></td><td className="px-3 py-2 text-slate-500">{name.startsWith('Swipe')||name.startsWith('Circle')?'Dynamic':'Static'}</td></tr>)}</tbody></table></div><div className="mt-3 text-[10px] leading-5 text-slate-500">Normal actions use the configured frame hold and cooldown. Call Nurse requires a stable 2-second hold; the camera progress ring shows its confirmation time. Dynamic swipes and circles are not eligible for Call Nurse. The alert is simulated and does not contact hospital staff.</div></div>}
             {tab==='Train'&&<div><div className="mb-4 flex items-start justify-between"><div><div className="eyebrow">LEVEL 2 / PERSONAL MODEL</div><h2 className="mt-1 text-lg font-extrabold">Train a gesture</h2><p className="mt-1 max-w-md text-xs leading-5 text-slate-400">Record forty normalized landmark snapshots of a distinct pose. Custom samples are matched locally against the nearest neighbors.</p></div><div className="flex gap-1"><button className="btn !p-2" aria-label="Export training data" onClick={exportTraining}><Download size={14}/></button><label className="btn !p-2" aria-label="Import training data"><Upload size={14}/><input className="hidden" type="file" accept="application/json" onChange={e=>importTraining(e.target.files?.[0])}/></label></div></div><div className="rounded-xl border border-white/7 bg-[#0a1929] p-4"><label className="eyebrow" htmlFor="train-name">GESTURE NAME</label><div className="mt-2 flex flex-col gap-2 sm:flex-row"><input id="train-name" className="control" value={trainName} onChange={e=>setTrainName(e.target.value)} placeholder="Name this pose"/><button disabled={cameraState!=='Camera live'||!trainName.trim()} className="btn btn-primary shrink-0" onClick={addTraining}>{recording?<><Activity size={14}/>Recording {captureCount}/40</>:<><Plus size={14}/>Record 40 samples</>}</button></div><div className="mt-3 h-1.5 overflow-hidden rounded bg-white/10"><div className="h-full bg-cyan-300 transition-all" style={{width:`${recording?captureCount/40*100:0}%`}}/></div><div className="mt-2 text-[10px] text-slate-500">{cameraState!=='Camera live'?'Start the camera first.':recording?'Hold the same pose steady in view.':'A clear, centered hand pose works best.'}</div></div><div className="mt-4 space-y-2">{[...new Set(samples.map(s=>s.name))].map(name=><div key={name} className="flex items-center justify-between rounded-lg border border-white/5 px-3 py-2.5"><div><div className="text-xs font-bold">{name}</div><div className="mono text-[10px] text-slate-500">{samples.filter(s=>s.name===name).length} samples · KNN active</div></div><button className="btn btn-danger !p-2" aria-label={`Delete ${name}`} onClick={()=>{setSamples(s=>s.filter(x=>x.name!==name));setMapping(m=>{const next={...m};delete next[name];return next;});}}><Trash2 size={13}/></button></div>)}</div>{samples.length===0&&<div className="mt-4 rounded-xl border border-dashed border-white/10 px-4 py-7 text-center text-xs text-slate-500">No custom gestures yet. Recorded examples will appear here.</div>}</div>}
-            {tab==='Hardware'&&<div><div className="mb-4"><div className="eyebrow">LEVEL 3 / EXTENSIONS</div><h2 className="mt-1 text-lg font-extrabold">Hardware & devices</h2><p className="mt-1 text-xs leading-5 text-slate-400">The virtual devices work locally. Optional WebSocket relay sends a packet only when a recognized command fires.</p></div><div className="rounded-xl border border-white/7 bg-[#0a1929] p-4"><div className="flex items-center justify-between"><div><div className="text-sm font-bold">WebSocket relay</div><div className="mt-1 flex items-center gap-2 text-[10px] text-slate-400"><i className={`dot ${wsStatus==='Connected'?'live':''}`}/>{wsStatus}</div></div><Radio className="text-cyan-200" size={19}/></div><label className="eyebrow mt-4 block" htmlFor="ws-endpoint">ENDPOINT</label><div className="mt-2 flex flex-col gap-2 sm:flex-row"><input id="ws-endpoint" className="control mono text-xs" value={wsUrl} onChange={e=>setWsUrl(e.target.value)} placeholder="wss://your-relay.example"/>{wsStatus==='Connected'?<button className="btn btn-danger" onClick={disconnectSocket}>Disconnect</button>:<button className="btn btn-primary" onClick={connectSocket}>Connect</button>}</div><p className="mt-2 text-[10px] text-slate-500">Use a trusted ws:// or wss:// relay. This browser does not host a relay server.</p></div><div className="mt-4"><div className="eyebrow mb-2">VIRTUAL DEVICES · LOCAL DEMO</div>{(['lamp','fan'] as const).map(device=><div key={device} className="mb-2 flex items-center justify-between rounded-xl border border-white/7 bg-[#0a1929] px-4 py-3"><div><div className="text-sm font-bold capitalize">{device==='lamp'?'Studio light':'Desk fan'}</div><div className="text-[10px] text-slate-500">Virtual device · no hardware connection required</div></div><button className={`btn ${virtualDevices[device]?'btn-primary':''}`} onClick={()=>setVirtualDevices(d=>({...d,[device]:!d[device]}))}>{virtualDevices[device]?'On':'Off'}</button></div>)}</div></div>}
+            {tab==='Devices'&&<VirtualDevicesPanel devices={virtualDevices} onToggle={device=>setVirtualDevices(current=>({...current,[device]:!current[device]}))}/>}
             {tab==='Log'&&<div><div className="mb-4 flex items-center justify-between"><div><div className="eyebrow">SESSION TRACE</div><h2 className="mt-1 text-lg font-extrabold">Command log</h2></div><button className="btn" onClick={()=>setEvents([])}><Trash2 size={13}/>Clear</button></div><div className="max-h-[455px] space-y-2 overflow-auto">{events.map((e,i)=><div key={`${e.at}-${i}`} className="grid grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-white/5 bg-[#0a1929] px-3 py-2.5"><span className="mono text-[10px] text-slate-500">{new Date(e.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span><div><div className="text-xs font-bold">{e.command}</div><div className="text-[10px] text-slate-500">{e.gesture}</div></div><span className="mono text-[10px] text-cyan-200">{Math.round(e.confidence*100)}%</span></div>)}{events.length===0&&<div className="subtle-grid flex min-h-[250px] flex-col items-center justify-center rounded-xl border border-dashed border-white/10 text-center"><div className="grid h-11 w-11 place-items-center rounded-xl bg-cyan-200/[.07] text-cyan-200"><Layers3 size={19}/></div><div className="mt-3 text-sm font-bold">Waiting for a command</div><p className="mt-1 text-xs text-slate-500">Recognition events and keyboard actions appear here.</p></div>}</div></div>}
           </div>
         </section>
       </div>
       <footer className="mt-5 flex flex-wrap items-center justify-between gap-2 px-1 text-[10px] text-slate-600"><span>GestureDeck · Browser-local computer vision demo</span><span className="flex items-center gap-3"><span><Keyboard size={11} className="mr-1 inline"/>Space pause · Enter play · arrows navigate / volume · M mute</span><button className="text-slate-400 hover:text-cyan-200" onClick={()=>setShowOnboard(true)} aria-label="Show gesture guide"><CircleHelp size={14}/></button></span></footer>
     </main>
-    {showSettings&&<div className="fixed inset-0 z-40 bg-black/55" onClick={()=>setShowSettings(false)}><aside className="glass absolute right-0 top-0 h-full w-full max-w-sm overflow-auto border-l border-white/10 p-5" onClick={e=>e.stopPropagation()}><div className="flex items-center justify-between"><div><div className="eyebrow">RECOGNITION TUNING</div><h2 className="mt-1 text-lg font-extrabold">Settings</h2></div><button className="btn !p-2" onClick={()=>setShowSettings(false)} aria-label="Close settings"><X size={15}/></button></div><div className="mt-8 space-y-7"><Setting label="Hold frames" value={settings.hold} min={3} max={18} suffix=" frames" onChange={n=>setSettings(s=>({...s,hold:n}))} help="How long a stable pose must be seen before firing."/><Setting label="Cooldown" value={settings.cooldown} min={200} max={2000} step={100} suffix=" ms" onChange={n=>setSettings(s=>({...s,cooldown:n}))} help="Minimum quiet time between recognized actions."/><Setting label="Confidence threshold" value={settings.threshold} min={40} max={95} suffix="%" onChange={n=>setSettings(s=>({...s,threshold:n}))} help="Ignore uncertain or transitional hand poses."/><div className="rounded-xl border border-white/7 bg-[#0a1929] p-3 text-xs leading-5 text-slate-400"><strong className="text-slate-200">Processing stays on-device.</strong><br/>Video is read locally by MediaPipe and never uploaded by GestureDeck.</div></div></aside></div>}
+   {showSettings&&<div className="fixed inset-0 z-40 bg-black/55" onClick={()=>setShowSettings(false)}><aside className="glass absolute right-0 top-0 h-full w-full max-w-sm overflow-auto border-l border-white/10 p-5" onClick={e=>e.stopPropagation()}><div className="flex items-center justify-between"><div><div className="eyebrow">RECOGNITION TUNING</div><h2 className="mt-1 text-lg font-extrabold">Settings</h2></div><button className="btn !p-2" onClick={()=>setShowSettings(false)} aria-label="Close settings"><X size={15}/></button></div><div className="mt-8 space-y-7"><Setting label="Hold frames" value={settings.hold} min={3} max={18} suffix=" frames" onChange={n=>setSettings(s=>({...s,hold:n}))} help="How long a stable pose must be seen before firing. Call Nurse always requires 2 seconds."/><Setting label="Cooldown" value={settings.cooldown} min={200} max={2000} step={100} suffix=" ms" onChange={n=>setSettings(s=>({...s,cooldown:n}))} help="Minimum quiet time between recognized actions."/><Setting label="Confidence threshold" value={settings.threshold} min={40} max={95} suffix="%" onChange={n=>setSettings(s=>({...s,threshold:n}))} help="Ignore uncertain or transitional hand poses."/><div className="rounded-xl border border-white/7 bg-[#0a1929] p-3 text-xs leading-5 text-slate-400"><strong className="text-slate-200">Processing stays on-device.</strong><br/>Video is read locally by MediaPipe and never uploaded by GestureDeck.</div></div></aside></div>}
     {showOnboard&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020914]/80 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><div className="glass w-full max-w-[560px] rounded-2xl p-5 sm:p-7"><div className="flex items-start justify-between"><div><span className="chip"><Sparkles size={12}/>QUICK START</span><h2 id="welcome-title" className="mt-4 text-2xl font-extrabold tracking-tight">Let your hands do the clicking.</h2><p className="mt-2 max-w-md text-xs leading-5 text-slate-400">Start the camera when you are ready. Keep one hand clearly visible, palm toward the camera, with even light.</p></div><button className="btn !p-2" aria-label="Close welcome" onClick={()=>{setShowOnboard(false);localStorage.setItem('gesturedeck:onboarded','1');}}><X size={15}/></button></div><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">{[['Open Palm','Pause'],['Thumbs Up','Play'],['Point Left','Previous'],['Point Right','Next'],['Closed Fist','Stop'],['Victory','Volume up']].map(([g,c])=><div key={g} className="rounded-xl border border-white/7 bg-[#0a1929] p-3"><div className="text-xs font-bold text-cyan-100">{g}</div><div className="mt-1 text-[10px] text-slate-500">{c}</div></div>)}</div><div className="mt-5 flex flex-col-reverse justify-between gap-3 sm:flex-row sm:items-center"><span className="text-[10px] text-slate-500">Keys: Space pause · Enter play · arrows next/previous or volume · M mute · Esc stop</span><button className="btn btn-primary" onClick={()=>{setShowOnboard(false);localStorage.setItem('gesturedeck:onboarded','1');}}>Got it</button></div></div></div>}
     <div className="toast-stack" aria-live="polite">{toasts.map(t=><div className="toast-item" key={t.id}>{t.text}</div>)}</div>
   </div>;

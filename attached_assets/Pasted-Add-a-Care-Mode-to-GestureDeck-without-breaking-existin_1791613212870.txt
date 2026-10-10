@@ -1,0 +1,19 @@
+Add a "Care Mode" to GestureDeck without breaking existing features.
+
+1. Add a third Demo App option called "Medical Viewer": a viewer showing a stack of 8 generated placeholder scan images (canvas-drawn gradient/noise slices labeled "Slice 1/8"). Next/Previous change slice, Seek/Rotate zoom and rotate the image, Pause freezes the view, Stop resets zoom and rotation. Show a "Sterile Mode: touch-free" badge.
+
+2. Add a "Call Nurse" command that triggers a full-width pulsing red alert banner, a beep via Web Audio, and a log entry. Require a longer hold (about 2 seconds, with a visible progress ring) before it fires, and add a Dismiss button.
+
+3. Add a "Scenario" selector with presets: "Operating Room" and "Bedside Patient". Each preset loads its own gesture map and selects the right demo app (Medical Viewer or Virtual Devices).
+
+4. Update the README with a short problem statement for hospital use.
+
+5. Remove the real-hardware connection option from the dashboard:
+   - Remove the "Connect Arduino/ESP32" button, the Web Serial connection UI, and any serial status chip or connection indicator from the Hardware tab and everywhere else in the dashboard.
+   - Remove the client-side Web Serial code and any command-sending code that depends on it.
+   - KEEP the Virtual Devices panel (animated LED bulb, spinning fan, robot icon) and keep all gesture-to-virtual-device behavior working, because the Bedside Patient scenario uses it. Rename the "Hardware" tab to "Devices" and make sure it still opens the Virtual Devices panel.
+   - Remove the Arduino/hardware wiring section from the README, and delete arduino/gesture_receiver.ino if nothing else references it.
+   - Leave the Node/Express server and the command bus untouched so the app still builds and runs.
+   - After the change, confirm there are no leftover references, imports or unused settings related to Web Serial, and that the app builds with no console errors.
+
+Do not change any other existing behavior. Test that Level 1 gestures, swipes, circles, custom gesture training and the Demo App tabs all still work after these changes.
