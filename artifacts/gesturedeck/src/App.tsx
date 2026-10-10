@@ -87,10 +87,11 @@ function App(){
   },[app,fullscreen,muted,nextTrack,notify,playTone,presentationSlideCount,slide,stopTone,track]);
   useEffect(()=>{const unsubscribe=commandBus.subscribe(e=>doCommand(e.command,e.gesture,e.confidence));return()=>{unsubscribe();};},[doCommand]);
   useEffect(()=>()=>disposeImportedPresentation(importedPresentation),[importedPresentation]);
-  const startCamera=useCallback(async()=>{
+   const startCamera=useCallback(()=>{
+     const fail=(reason:unknown)=>{try{streamRef.current?.getTracks().forEach(t=>t.stop());}catch{}streamRef.current=null;if(videoRef.current)videoRef.current.srcObject=null;setCameraState('Camera error');setModelState(detectorRef.current?'Model loaded':'Model unavailable');setError(reason instanceof Error?reason.message:'Camera or model could not start.');};
+     const run=async()=>{
     setError('');setCameraState('Requesting access');
     if(!navigator.mediaDevices?.getUserMedia){setCameraState('Unavailable');setError('Camera access requires a secure HTTPS context and a camera-capable browser.');return;}
-    try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});streamRef.current=stream;
       const video=videoRef.current;if(!video)throw new Error('Video preview is not available.');video.srcObject=stream;await video.play();setCameraState('Camera live');
       setModelState('Loading model');detectorRef.current=await createDetector();setModelState('Model loaded');setPipeline(1);
@@ -121,8 +122,9 @@ function App(){
         rafRef.current=requestAnimationFrame(loop);
       };
       frameRef.current.stamp=performance.now();rafRef.current=requestAnimationFrame(loop);
-    }catch(e){streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;if(videoRef.current)videoRef.current.srcObject=null;setCameraState('Camera error');setModelState(detectorRef.current?'Model loaded':'Model unavailable');setError(e instanceof Error?e.message:'Camera or model could not start.');}
-  },[notify,recording,trainName]);
+     };
+     void run().catch(fail);
+   },[notify,recording,trainName]);
   const stopCamera=useCallback(()=>{cancelAnimationFrame(rafRef.current);if(countdownTimerRef.current!==null)window.clearInterval(countdownTimerRef.current);countdownTimerRef.current=null;setCountdown(0);setRecording(false);recordingRef.current=false;streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;detectorRef.current?.close();detectorRef.current=null;if(videoRef.current)videoRef.current.srcObject=null;setCameraState('Camera off');setModelState('Not loaded');setFps(0);setGesture('No hand detected');setPipeline(0);smoothRef.current=null;},[]);
   useEffect(()=>()=>{cancelAnimationFrame(rafRef.current);if(countdownTimerRef.current!==null)window.clearInterval(countdownTimerRef.current);streamRef.current?.getTracks().forEach(t=>t.stop());detectorRef.current?.close();socketRef.current?.close();if(oscRef.current)try{oscRef.current.stop();}catch{}},[]);
   useEffect(()=>{const update=()=>setIsPresenting(Boolean(document.fullscreenElement));document.addEventListener('fullscreenchange',update);return()=>document.removeEventListener('fullscreenchange',update);},[]);
@@ -160,7 +162,7 @@ function App(){
           <div className="relative aspect-[16/9] overflow-hidden bg-[#06101b] subtle-grid">
             <video ref={videoRef} muted playsInline aria-label="Mirrored live camera preview" className="absolute inset-0 h-full w-full -scale-x-100 object-cover" />
             <canvas ref={canvasRef} aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full object-cover"/>
-            {cameraState!=='Camera live'&&<div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#071320]/80 px-6 text-center"><div className="grid h-14 w-14 place-items-center rounded-2xl border border-cyan-100/15 bg-cyan-100/5 text-cyan-200"><Camera size={24}/></div><div className="text-sm font-bold">Camera stays off until you start</div><p className="max-w-sm text-xs leading-5 text-slate-400">Your video is processed locally in this browser. Nothing is recorded or uploaded.</p><button className="btn btn-primary" onClick={()=>void startCamera()}>Enable camera</button></div>}
+            {cameraState!=='Camera live'&&<div className="absolute inset-0 flex flex-col gap-3 px-6 text-center font-light text-[color:var(--color-slate-700)] bg-[color:var(--color-gray-50)] border-t-[color:var(--color-slate-500)] border-r-[color:var(--color-slate-500)] border-b-[color:var(--color-slate-500)] border-l-[color:var(--color-slate-500)] justify-center items-center"><div className="grid h-14 w-14 place-items-center rounded-2xl border border-cyan-100/15 bg-cyan-100/5 text-cyan-200"><Camera size={24}/></div><div className="text-sm font-bold">Camera stays off until you start</div><p className="max-w-sm text-xs leading-5 text-[color:var(--color-slate-700)]">Your video is processed locally in this browser. Nothing is recorded or uploaded.</p><button className="btn btn-primary" onClick={()=>void startCamera()}>Enable camera</button></div>}
             {cameraState==='Camera live'&&<div className="absolute left-3 top-3 chip bg-[#071320bb]"><i className={`dot ${modelState==='Model loaded'?'live':'warn'}`}/>{modelState}</div>}
             {cameraState==='Camera live'&&<div className="absolute bottom-3 left-3 rounded-xl border border-white/10 bg-[#071320dd] px-4 py-3 shadow-xl"><div className="eyebrow">CURRENT GESTURE</div><div className="mt-1 flex items-center gap-2"><div className="relative grid h-10 w-10 place-items-center rounded-full border border-cyan-200/30 text-[11px] font-bold text-cyan-100"><span className="absolute inset-0 rounded-full border-2 border-cyan-300" style={{clipPath:`inset(${100-holdProgress*100}% 0 0 0)`}}></span>{Math.round(holdProgress*100)}%</div><div><div className="text-sm font-extrabold">{gesture}</div><div className="mono text-[10px] text-slate-400">{Math.round(confidence*100)}% confidence</div></div></div></div>}
             {cameraState==='Camera live'&&lowLight&&<div className="absolute right-3 top-3 chip"><i className="dot warn"/>Low light detected</div>}
