@@ -228,8 +228,5 @@ A single command bus sends every recognized gesture to any subscriber. Adding a 
 
 ## Team
 
-`[Team name]` · `[Member names]` · `[College and department]`
+`[codeXchamps]` · `[Ullas.G ,Rishitha BR ,Ajay Krishna V ,Sushmitha]` · [BGSCET,ISE DEPARTMENT]`
 
-## License
-
-`[Choose a license, for example MIT]`
